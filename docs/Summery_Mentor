@@ -1,0 +1,104 @@
+SignalBlocks - جمع‌بندی نهایی معماری و طراحی (تا ۶ فوریه ۲۰۲۶)
+
+۱. هدف اصلی پروژه
+- ایجاد یک لایه شتاب‌دهنده (accelerator layer) روی دیتابیس‌های time-series موجود (ClickHouse, InfluxDB و غیره)
+- ارائه latency قابل پیش‌بینی و بسیار پایین (<۲ میلی‌ثانیه) برای داشبوردهای تکراری صنعتی
+- تمرکز روی داده‌های high-frequency از سنسورها، PLC، OPC، MQTT در محیط‌های تولیدی، انرژی و utilities (Industry 4.0/5.0)
+- ویژگی کلیدی: بلوک‌های تغییرمحور (change-driven)، immutable، شاخص in-memory، بدون GROUP BY در زمان اجرا
+
+۲. معماری پیشنهادی کلی (بهینه برای latency پایین و scalability)
+- ورودی‌ها (Ingest) → لایه دریافت داده با interface واحد
+- پردازش concurrent → worker pool با batchهای موقت in-memory
+- aggregation incremental → محاسبه روی batchها و ساخت بلوک‌های immutable
+- ذخیره‌سازی دوگانه → raw برای audit، aggregated blocks برای query سریع
+- خروجی‌ها → push زنده (WebSocket/SSE) + query on-demand (REST/gRPC)
+
+دیاگرام سطح بالا :
+
+graph TD
+    A[OPC / MQTT / Agents] --> B[Ingest API]
+    B --> C["Raw Storage\n(ClickHouse / InfluxDB / S3 / MinIO)"]
+    B --> D["Block Builder\n(Change-driven & Immutable)"]
+    D --> E["Immutable Aggregation Blocks\n(pre-computed KPIs)"]
+    E --> F["In-Memory Aggregation Index\n(Redis-like, deterministic <2ms)"]
+    F --> G[Query Planner]
+    G --> H["Dashboards\n(Grafana / Power BI / Custom UI)"]
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style H fill:#bbf,stroke:#333,stroke-width:2px
+    style F fill:#ff9,stroke:#333,stroke-width:2px
+
+جریان اصلی:
+- داده خام برای audit و تحلیل عمیق ذخیره می‌شود
+- بلوک‌ها فقط هنگام تغییرات معنادار ساخته می‌شوند (نه زمان‌بندی ثابت)
+- شاخص in-memory پاسخ‌دهی سریع و قابل پیش‌بینی به داشبوردها می‌دهد
+
+۳. معماری پیشنهادی پیشرفته  
+
+graph TD
+    subgraph "Data Sources / Input Interfaces"
+        WS1["WebSocket / MQTT Ingest"] --> II["Ingest Interface"]
+        GRPC["gRPC Streaming"] --> II
+        REST["REST API"] --> II
+        MQTT["MQTT Broker"] --> II
+    end
+
+    II -->|Normalize & Validate| EB["Event Bus / Channel\n(Data Received Event)"]
+
+    EB -->|Concurrent Processing| BP["Batch Processor\n(Goroutines + Temp Memory Buffers)"]
+
+    BP --> AGG["Aggregation Engine\n(Time-weighted, min/max, integrals, etc.)"]
+
+    AGG -->|Dump after Aggregation| PS["Permanent Storage\n(Raw Data + Immutable Blocks)"]
+
+    PS --> IMI["In-Memory Index\n(Fast Lookups <2ms)"]
+
+    subgraph "Output Paths"
+        IMI --> WS2["WebSocket / SSE\n(Live push to Dashboards)"]
+        IMI --> API["REST / gRPC API\n(On-demand queries & config)"]
+    end
+
+    WS2 --> D1["Live Dashboards\n(Grafana Live, Custom UI)"]
+    API --> D2["Tools & Ad-hoc Queries\n(Power BI, Scripts, External Services)"]
+
+    style II fill:#ff9,stroke:#333,stroke-width:2px
+    style EB fill:#9f9,stroke:#333
+    style BP fill:#bbf,stroke:#333
+    style PS fill:#f9f,stroke:#333
+
+۴. نکات کلیدی طراحی و محاسبات بهینه
+
+- اولویت ورودی: WebSocket/gRPC برای real-time، REST برای سازگاری و legacy
+- پردازش concurrent: worker pool (۴-۸ goroutine) + batch size ۱۰۰-۵۰۰ point
+- تخمین throughput: ۱۰,۰۰۰–۱۰۰,۰۰۰ point/sec با یک node (۴ core)
+- latency هدف: ingest ~۱–۵ms، aggregation ~۰.۵ms، query <۲ms (۹۹% hit rate در index)
+- storage: raw ~۲۰–۵۰MB/day با change-driven (۵۰–۸۰% کاهش حجم)
+- index size: ۱–۵MB برای ۱۰۰۰ tag و یک سال داده
+
+۵. راهکارهای جلوگیری از data loss و مشکلات ذخیره‌سازی
+
+- WAL (Write-Ahead Logging): قبل از هر write اصلی، تغییر را به log append-only بنویس (recovery سریع در crash)
+- Replication: حداقل ۳ کپی (local SSD + remote S3 + یک replica دیگر)
+- Backup منظم: RPO زیر ۱ دقیقه، RTO زیر ۱۰ دقیقه
+- Compression: ZSTD/LZ4 lossless با checksum برای جلوگیری از corruption
+- Monitoring: checksum دوره‌ای، alert برای missing chain یا anomaly
+
+۶. تقسیم پیشنهادی به صفحات (layers)
+
+- Ingest Page: دریافت، validate، normalize، ارسال به event bus (سبک و scale افقی)
+- Write/Processing Page: پردازش concurrent، aggregation، تخلیه به storage دائمی + WAL
+- Index/Query Page: نگهداری index in-memory، پاسخ‌دهی سریع به queryها
+
+۷. تناقضات و ریسک‌های شناسایی‌شده + راه‌حل‌ها
+
+- تناقض latency vs durability: WAL latency کمی اضافه می‌کند → asynchronous WAL با ریسک کنترل‌شده
+- تناقض scalability vs consistency: در scale بزرگ، chainها ممکن است out-of-order شوند → window buffering (۵ دقیقه تأخیر) برای sort
+- ریسک overload: rate limiting روی ingest + backpressure روی queue
+- ریسک memory leak: max batch time (۱ ثانیه) + max buffer size
+
+۸. پیشنهاد نهایی من (برای شروع MVP و رشد)
+
+- MVP ساده: WebSocket ingest + simple avg aggregation + in-memory index + WebSocket push
+- سپس اضافه کن: gRPC/REST ورودی، WAL، replication، compression
+- بعداً: توزیع به microservices (ingest جدا، processing جدا)
+- اولویت: اول latency و correctness تست کن، بعد scale

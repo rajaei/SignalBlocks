@@ -1,0 +1,15 @@
+cmd/signalblocks/ → نقطه ورود برنامه (main.go اینجا می‌ره)
+internal/ → کد خصوصی پروژه (خارجی‌ها نباید مستقیم import کنن)
+block/ → تعریف بلوک‌ها و state blockها
+index/ → شاخص in-memory (aggregation index)
+ingest/ → لایه دریافت داده (API، mock برای OPC/MQTT)
+metadata/ → مدل تگ‌ها، گروه‌ها، سیاست تغییر
+query/ → برنامه‌ریز و اجراکننده کوئری
+aggregation/ → توابع تجمیع (avg, min, max, time-weighted و ...)
+config/ → لود کانفیگ (yaml, env)
+
+pkg/ → اگر بعداً چیزی عمومی/قابل استفاده مجدد ساختی (فعلاً خالی)
+examples/ → دموها، فایل‌های نمونه داده، اسکریپت‌های تست سریع
+tests/ → تست‌های unit/integration
+scripts/ → اسکریپت‌های build/run/test
+docs/ → مستندات آینده (architecture.md و ...)

@@ -1,0 +1,318 @@
+# SignalBlocks — Hot vs Cold Path Architecture
+
+## 1. Architectural Principle
+
+SignalBlocks is explicitly split into **Hot Path** (deterministic, ultra-low latency, no brokers) and **Cold Path** (asynchronous, resilient, integration-friendly).
+
+> **Rule:** Nothing in the hot path may introduce GC jitter, disk contention outside controlled WAL, or broker scheduling uncertainty.
+
+---
+
+## 2. High-Level Diagram (Conceptual)
+
+```
+┌────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│  Devices   │ --> │  MQTT Broker    │ --> │ Ingest Gateway   │
+│ PLC / OPC  │     │ (EMQX/Mosq)     │     │ (Go, lock-free) │
+└────────────┘     └─────────────────┘     └─────────┬────────┘
+                                                        │
+                                                        ▼
+                                              ┌──────────────────┐
+                                              │ Ring Buffer /    │
+                                              │ Shared Memory    │
+                                              └─────────┬────────┘
+                                                        │
+                                                        ▼
+                                              ┌──────────────────┐
+                                              │ Block Builder    │
+                                              │ Change-driven    │
+                                              └─────────┬────────┘
+                                                        │
+                                   ┌────────────────────┴──────────────────┐
+                                   │                                         │
+                                   ▼                                         ▼
+                        ┌────────────────────┐                 ┌──────────────────────┐
+                        │ In-Memory Index    │                 │ Append-only WAL      │
+                        │ (Query Hot Data)   │                 │ (NVMe, batched fsync)│
+                        └─────────┬──────────┘                 └─────────┬────────────┘
+                                   │                                         │
+                                   ▼                                         ▼
+                        ┌────────────────────┐                 ┌──────────────────────┐
+                        │ Query Engine       │                 │ Cold Path Fanout     │
+                        │ (<2ms deterministic)│                │ (Async Only)         │
+                        └────────────────────┘                 └─────────┬────────────┘
+                                                                            │
+                                                                            ▼
+                                                          ┌────────────────────────────┐
+                                                          │ RabbitMQ / Kafka / NATS    │
+                                                          │ Alerts / ETL / Replication │
+                                                          └────────────────────────────┘
+```
+
+---
+
+## 3. Hot Path Definition
+
+**Purpose:** Build deterministic aggregation blocks and serve dashboards.
+
+Included components:
+
+* MQTT Broker (QoS 0/1, no persistence)
+* Ingest Gateway
+* Ring Buffer / Shared Memory
+* Block Builder
+* In-memory Aggregation Index
+* Query Engine
+* Local WAL (controlled, batched)
+
+Explicitly excluded:
+
+* RabbitMQ
+* Kafka
+* External databases
+* Compression
+* Network hops beyond ingress
+
+---
+
+## 4. Cold Path Definition
+
+**Purpose:** Durability, integration, replay, analytics, alerts.
+
+Components:
+
+* Async fanout after block commit
+* Message brokers (RabbitMQ / Kafka / NATS)
+* Raw storage (ClickHouse, S3, MinIO)
+* External consumers
+
+Cold path failure **must not** affect hot path latency or availability.
+
+---
+
+# Latency Budget (Per Stage)
+
+## 5. End-to-End Hot Path Latency Target
+
+**Hard target:** < 2.0 ms (P99)
+
+| Stage                  | Budget (ms) | Notes                        |
+| ---------------------- | ----------- | ---------------------------- |
+| MQTT receive → Gateway | 0.3         | Local network, no TLS in MVP |
+| Decode + normalize     | 0.2         | Zero-copy parsing            |
+| Ring buffer enqueue    | 0.05        | Lock-free                    |
+| Change detection       | 0.2         | Threshold / delta checks     |
+| Block construction     | 0.3         | In-memory only               |
+| WAL append (batched)   | 0.2         | fsync every N ms             |
+| Index update           | 0.15        | Pre-allocated structures     |
+| Query availability     | 0.15        | Immediate visibility         |
+| **Total**              | **1.55 ms** | Margin preserved             |
+
+---
+
+## 6. What Is *Not* in the Budget
+
+* WAL replay (startup only)
+* Cold path replication
+* Compression
+* Long-term storage writes
+* Alert evaluation
+
+These are explicitly asynchronous.
+
+---
+
+# Benchmark & Validation Plan
+
+## 7. Benchmark Objectives
+
+The benchmark suite is designed to **prove deterministic latency**, not peak throughput.
+
+Primary goals:
+
+* Validate **P50 / P95 / P99 latency < 2ms**
+* Detect tail-latency spikes
+* Verify hot-path isolation from cold-path failures
+* Measure cost of WAL durability
+
+---
+
+## 8. Workload Profiles
+
+### Profile A — Steady Industrial Load
+
+* 10k points/sec
+* 1k tags
+* Change rate: 5–10%
+* Update interval: irregular (event-driven)
+
+### Profile B — Bursty PLC Load
+
+* Baseline: 5k points/sec
+* Bursts: 100k points/sec for 1–2 seconds
+* Simulates batch PLC scans
+
+### Profile C — Worst-case Change Storm
+
+* 20k points/sec
+* 100% change rate
+* All tags crossing thresholds
+
+---
+
+## 9. Measurement Points
+
+Latency timestamps captured at:
+
+1. MQTT receive (broker)
+2. Gateway ingress
+3. Ring buffer enqueue
+4. Block commit
+5. Query-visible index update
+
+All timestamps are monotonic (CLOCK_MONOTONIC_RAW).
+
+---
+
+## 10. Success Criteria
+
+| Metric      | Target   |
+| ----------- | -------- |
+| P50 latency | < 1.0 ms |
+| P95 latency | < 1.5 ms |
+| P99 latency | < 2.0 ms |
+| Max spike   | < 5 ms   |
+| Data loss   | 0        |
+
+---
+
+## 11. Failure Injection Tests
+
+* Kill cold-path broker during load
+* Saturate disk IO with background writes
+* Pause GC (stress allocation)
+* Drop MQTT connections
+
+Expected result: **Hot path latency unaffected**.
+
+---
+
+# Official Mermaid Diagrams
+
+## 12. Hot vs Cold Path (Mermaid)
+
+```mermaid
+flowchart LR
+    subgraph Edge
+        D[Devices / PLC / OPC]
+        M[MQTT Broker]
+    end
+
+    D --> M
+
+    %% Sharded Hot Path
+    M -->|hash(tag_id)| G1[Ingest Gateway #1]
+    M -->|hash(tag_id)| G2[Ingest Gateway #2]
+    M -->|hash(tag_id)| G3[Ingest Gateway #N]
+
+    subgraph HotPathShard1[Hot Path Shard 1]
+        G1 --> R1[Ring Buffer]
+        R1 --> B1[Block Builder]
+        B1 --> I1[In-Memory Index]
+        B1 --> W1[Local WAL]
+        I1 --> Q1[Query Engine]
+    end
+
+    subgraph HotPathShard2[Hot Path Shard 2]
+        G2 --> R2[Ring Buffer]
+        R2 --> B2[Block Builder]
+        B2 --> I2[In-Memory Index]
+        B2 --> W2[Local WAL]
+        I2 --> Q2[Query Engine]
+    end
+
+    subgraph HotPathShardN[Hot Path Shard N]
+        G3 --> R3[Ring Buffer]
+        R3 --> B3[Block Builder]
+        B3 --> I3[In-Memory Index]
+        B3 --> W3[Local WAL]
+        I3 --> Q3[Query Engine]
+    end
+
+    %% Cold Path
+    B1 -. async .-> F[Cold Path Fanout]
+    B2 -. async .-> F
+    B3 -. async .-> F
+    F --> MQ[RabbitMQ / Kafka / NATS]
+    MQ --> E[ETL / Alerts / Replication]
+```
+
+---
+
+# Design Doc (Investor / Accelerator Version)
+
+## 7. Problem
+
+Industrial dashboards depend on time-series databases that are optimized for throughput, not predictable latency. Even well-provisioned systems suffer from:
+
+* Non-deterministic GROUP BY queries
+* Cache misses on long time ranges
+* Latency spikes during compaction
+
+This makes sub-second operational decisions unreliable.
+
+---
+
+## 8. Solution
+
+SignalBlocks introduces a **deterministic aggregation layer** that:
+
+* Converts raw streams into immutable, change-driven blocks
+* Eliminates runtime aggregation
+* Guarantees predictable query latency (<2ms)
+
+It augments existing databases rather than replacing them.
+
+---
+
+## 9. Key Technical Differentiators
+
+* Change-driven block creation (not fixed windows)
+* Pre-aggregated immutable blocks
+* Memory-first architecture
+* Explicit hot/cold path separation
+* Brokerless hot path
+* Industrial-grade semantics (state duration, integrals)
+
+---
+
+## 10. Why This Is Hard to Copy
+
+* Requires deep understanding of industrial signals
+* Requires latency budgeting across the entire pipeline
+* Conflicts with traditional message-driven architectures
+* Optimized for determinism, not just throughput
+
+---
+
+## 11. Target Users
+
+* Manufacturing operations
+* Energy & utilities
+* Smart infrastructure
+* Industrial OEM dashboards
+
+---
+
+## 12. Roadmap (Condensed)
+
+* MVP: single-node deterministic engine
+* Pilot: real PLC/MQTT workloads
+* Scale-out: sharded hot paths + cold path replication
+* Ecosystem: Grafana plugin, APIs
+
+---
+
+## 13. Vision
+
+SignalBlocks becomes the **latency standard layer** for industrial analytics — enabling operators to trust what they see, instantly.
