@@ -1,0 +1,233 @@
+# SignalBlocks Session Rules Configuration
+# Defines how sessions (heat, shift, campaign) are tracked and which KPIs are calculated
+
+version: "1.0"
+
+# Global session settings
+global:
+  enabled: true
+  storage:
+    parquet_file: "heat_sessions.parquet"
+    partition_layout: "year/month/day/group"
+
+# Session type definitions
+session_types:
+  # Heat-level sessions (most granular)
+  heat:
+    enabled: true
+    description: "Individual heat/furnace session"
+    
+    # Trigger configuration: which tag change starts a new session
+    trigger:
+      tag_name: "heat_number"      # Tag that uniquely identifies the session
+      tag_index: 0                 # Optional: pre-assigned tag index
+      change_policy: "on_change"   # Trigger when this tag value changes
+    
+    # KPIs to calculate for this session type
+    kpis:
+      # Example: Heat Duration
+      - name: "heat_duration_seconds"
+        type: "duration"              # Special type: duration between start and end
+        description: "Total heat duration in seconds"
+        unit: "seconds"
+        output_column: "duration_seconds"
+      
+      # Example: Average Temperature
+      - name: "avg_temperature"
+        type: "avg"                   # Average aggregation
+        source_tag: "furnace_temperature"
+        description: "Average furnace temperature during heat"
+        unit: "°C"
+        output_column: "avg_temperature_celsius"
+      
+      # Example: Peak Temperature
+      - name: "max_temperature"
+        type: "max"                   # Maximum value
+        source_tag: "furnace_temperature"
+        description: "Peak furnace temperature"
+        unit: "°C"
+        output_column: "max_temperature_celsius"
+      
+      # Example: Total Energy
+      - name: "total_energy"
+        type: "sum"                   # Sum aggregation
+        source_tag: "energy_kwh"
+        description: "Total energy consumed"
+        unit: "kWh"
+        output_column: "total_energy_kwh"
+      
+      # Example: Product Count
+      - name: "product_count"
+        type: "sum"
+        source_tag: "products_produced"
+        description: "Number of products produced"
+        unit: "units"
+        output_column: "product_count"
+        condition: "tag_state == active"  # Optional: only count when condition met
+      
+      # Example: Defect Count
+      - name: "defect_count"
+        type: "sum"
+        source_tag: "products_defective"
+        description: "Number of defective products"
+        unit: "units"
+        output_column: "defect_count"
+      
+      # Example: State Changes
+      - name: "state_changes"
+        type: "count"                 # Count occurrences
+        source_tag: "system_state"
+        description: "Number of state transitions"
+        unit: "changes"
+        output_column: "state_changes"
+        condition: "change_detected"  # Optional condition
+      
+      # Example: Uptime Calculation
+      - name: "uptime"
+        type: "duration_filtered"      # Duration with condition
+        source_tag: "system_running"
+        description: "Total time system was running"
+        unit: "seconds"
+        output_column: "uptime_seconds"
+        condition: "value == 1"        # Only count when value is true
+    
+    # Output columns: explicitly defined to ensure consistency
+    output_columns:
+      - name: "heat_id"
+        type: "string"
+        source: "session_id"
+      - name: "heat_number"
+        type: "int64"
+        source: "trigger_tag_value"
+      - name: "group_id"
+        type: "string"
+      - name: "start_time"
+        type: "timestamp"
+      - name: "end_time"
+        type: "timestamp"
+      - name: "status"
+        type: "string"              # active, completed, failed
+    
+    # Redis cache settings
+    redis:
+      key_prefix: "heat:"
+      ttl_seconds: 86400            # 24 hours
+      publish_updates: true
+      pubsub_channel: "heat_updates"
+
+  # Shift-level sessions (daily or defined time windows)
+  shift:
+    enabled: true
+    description: "Shift-level aggregation (time-based)"
+    
+    trigger:
+      type: "time_window"           # Trigger on time boundaries
+      window_start: "00:00"         # Start time (HH:MM)
+      window_end: "23:59"
+      timezone: "UTC"
+      group_by_tag: "shift_id"      # Optional: identify specific shift
+    
+    kpis:
+      - name: "shift_duration"
+        type: "duration"
+        unit: "seconds"
+        output_column: "shift_duration_seconds"
+      
+      - name: "total_heats"
+        type: "count"
+        source_tag: "heat_number"
+        description: "Number of heats in shift"
+        unit: "count"
+        output_column: "heat_count"
+      
+      - name: "avg_heat_temperature"
+        type: "avg"
+        source_tag: "furnace_temperature"
+        unit: "°C"
+        output_column: "avg_furnace_temp_celsius"
+      
+      - name: "shift_energy"
+        type: "sum"
+        source_tag: "energy_kwh"
+        unit: "kWh"
+        output_column: "total_energy_kwh"
+      
+      - name: "total_products"
+        type: "sum"
+        source_tag: "products_produced"
+        unit: "units"
+        output_column: "product_count"
+      
+      - name: "total_defects"
+        type: "sum"
+        source_tag: "products_defective"
+        unit: "units"
+        output_column: "defect_count"
+      
+      - name: "downtime"
+        type: "duration_filtered"
+        source_tag: "system_running"
+        unit: "seconds"
+        output_column: "downtime_seconds"
+        condition: "value == 0"
+    
+    redis:
+      key_prefix: "shift:"
+      ttl_seconds: 604800           # 7 days
+      publish_updates: true
+      pubsub_channel: "shift_updates"
+
+  # Campaign-level sessions (multi-day or multi-shift)
+  campaign:
+    enabled: false                  # Optional feature
+    description: "Campaign-level aggregation"
+    
+    trigger:
+      tag_name: "campaign_id"
+      change_policy: "on_change"
+    
+    kpis:
+      - name: "campaign_duration"
+        type: "duration"
+        unit: "seconds"
+        output_column: "duration_seconds"
+      
+      - name: "total_heats"
+        type: "count"
+        source_tag: "heat_number"
+        unit: "count"
+        output_column: "heat_count"
+      
+      - name: "campaign_energy"
+        type: "sum"
+        source_tag: "energy_kwh"
+        unit: "kWh"
+        output_column: "total_energy_kwh"
+      
+      - name: "campaign_products"
+        type: "sum"
+        source_tag: "products_produced"
+        unit: "units"
+        output_column: "product_count"
+    
+    redis:
+      key_prefix: "campaign:"
+      ttl_seconds: 2592000          # 30 days
+      publish_updates: true
+      pubsub_channel: "campaign_updates"
+
+# KPI Type Reference:
+# - duration: Calculate time difference between session start and end
+# - duration_filtered: Calculate duration where condition is true
+# - sum: Sum all values from source tag during session
+# - avg: Average of all values from source tag
+# - max: Maximum value from source tag
+# - min: Minimum value from source tag
+# - count: Count occurrences of changes or matching condition
+# - first: First value of source tag in session
+# - last: Last value of source tag in session
+
+# Conditions (optional):
+# - tag_state == active/inactive/error
+# - value == N or value > N, value < N
+# - change_detected (any state change)

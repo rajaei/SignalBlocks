@@ -112,7 +112,50 @@ graph TD
     style FANOUT fill:#b0b8c0,stroke:#666,stroke-dasharray:5 5,color:#000
     style MQ fill:#b0b8c0,stroke:#666,color:#000
     style EXT fill:#b0b8c0,stroke:#666,color:#000
+```
 
+
+in detail, the architecture consists of:
+
+```mermaid
+graph TD
+    subgraph "Input Sources"
+        DEV[Industrial Devices<br>Sensors / PLC / OPC / MQTT] --> ING["Ingest Interfaces\n(WebSocket + gRPC + REST + MQTT)"]
+    end
+
+    ING -->|Normalize / Validate| EB["NATS JetStream\n(Pub/Sub + Log Distribution)"]
+
+    EB -->|Concurrent Workers| PROC["Processing Layer\n(Batch + Aggregation)"]
+
+    PROC --> SV["State Vectors\n(Parquet: start/end + vector)"]
+    PROC --> VD["Value Data\n(Parquet: tag_index + value)"]
+
+    PROC -->|Trigger Event| SB["Session Builder\n(Event-Driven: Heat / Shift)"]
+    SB --> HS["Heat_Sessions\n(per-heat KPIs)"]
+
+    subgraph "Permanent Storage"
+        SV & VD & HS --> PS["Parquet Storage\n(Hive Partitioning on MinIO/S3)"]
+    end
+
+    subgraph "Hot Path & Metadata"
+        PS --> REDIS["Redis\n(Tag Metadata + Index + Cache)"]
+    end
+
+    subgraph "Query & BI Layer"
+        REDIS -->|Live| DASH["Live Dashboards\n(Grafana)"]
+        PS --> DUCK["DuckDB\n(Query Engine)"]
+        DUCK --> BI["Power BI / Tableau"]
+    end
+
+    %% Styling
+    style ING fill:#ff9,stroke:#333
+    style EB fill:#99ccff,stroke:#333
+    style PROC fill:#bbf,stroke:#333
+    style SB fill:#9f9,stroke:#333
+    style REDIS fill:#ffcc00,stroke:#333
+    style DUCK fill:#ccffcc,stroke:#333
+    style PS fill:#f0f0f0,stroke:#999
+    
 ```
 
 Key Benefits of this Architecture:

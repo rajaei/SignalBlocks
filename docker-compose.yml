@@ -1,0 +1,154 @@
+version: '3.9'
+
+services:
+  nats:
+    image: nats:latest
+    container_name: signalblocks-nats
+    ports:
+      - "4222:4222"    # NATS client port
+      - "6222:6222"    # NATS cluster port
+      - "8222:8222"    # NATS monitoring port
+    command: -js -sd /data/nats
+    volumes:
+      - nats-data:/data/nats
+    networks:
+      - signalblocks-net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      # prometheus labels removed
+
+  redis:
+    image: redis:7
+    container_name: signalblocks-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - signalblocks-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      # prometheus labels removed
+
+  minio:
+    image: minio/minio:latest
+    container_name: signalblocks-minio
+    ports:
+      - "9000:9000"    # API port
+      - "9001:9001"    # Console port
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_SERVER_URL: http://minio:9000
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - signalblocks-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      # prometheus labels removed
+
+  # Prometheus, Loki and Promtail services removed
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: signalblocks-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_LOGS_MODE: console
+      GF_LOG_LEVEL: info
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - signalblocks-net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # no external monitoring services configured
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: signalblocks-app
+    ports:
+      - "8080:8080"    # HTTP API
+      - "8081:8081"    # Monitoring UI
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      NATS_URL: nats://nats:4222
+      REDIS_ADDR: redis:6379
+      REDIS_DB: 0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_USE_SSL: "false"
+      MINIO_BUCKET_DATA: signalblocks-data
+      HTTP_PORT: 8080
+      MONITORING_UI_PORT: 8081
+      INGEST_WORKERS: 4
+      PROCESSING_WORKERS: 4
+      SESSION_BUILDER_ENABLED: "true"
+      # LOKI_URL removed
+    volumes:
+      - ./cmd:/app/cmd:ro
+      - ./internal:/app/internal:ro
+      - ./pkg:/app/pkg:ro
+      - ./go.mod:/app/go.mod:ro
+      - ./go.sum:/app/go.sum:ro
+    networks:
+      - signalblocks-net
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      # prometheus labels removed
+
+volumes:
+  nats-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  # prometheus-data and loki-data volumes removed
+  grafana-data:
+    driver: local
+
+networks:
+  signalblocks-net:
+    driver: bridge
