@@ -138,6 +138,34 @@ Change-driven blocks are created only on meaningful changes (not fixed time inte
 Immutable aggregated blocks feed the in-memory index
 Query planner serves sub-2ms responses directly from the index to dashboards
 
+For failure
+```mermaid
+graph TD
+    MQTT[MQTT Broker]:::edge --> IG[Ingest Gateways]:::edge
+
+    IG --> RB[Ring Buffer]:::hot
+    RB --> BB[Block Builder]:::hot
+    BB --> WAL[Append-only WAL]:::hot
+    BB --> IDX[In-Memory Index]:::hot
+    IDX --> Q[Fast Queries]:::hot
+
+    BB -. finalized blocks .-> CP[Cold Path Fanout]:::cold
+    CP --> BI[BI / ETL / Alerts]:::cold
+
+    %% Failure annotations
+    MQTT -. transport loss .-> F1[(QoS bounded loss)]
+    IG -. crash .-> F2[(ms-level loss)]
+    RB -. overflow .-> F3[(controlled drop)]
+    BB -. crash .-> F4[(WAL replay)]
+    WAL -. disk fail .-> F5[(shard loss)]
+    CP -. down .-> F6[(no hot impact)]
+
+    %% Styles
+    classDef edge fill:#f0f0f0,stroke:#333
+    classDef hot fill:#d0e0f0,stroke:#333
+    classDef cold fill:#b0b8c0,stroke:#666,stroke-dasharray:5 5
+ ```
+
 Current Status
 
 MVP in progress (built with Go)
