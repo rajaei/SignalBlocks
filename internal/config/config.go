@@ -140,7 +140,7 @@ func Load() *Config {
 		RedisIdleTimeout: getDuration("REDIS_IDLE_TIMEOUT_SEC", 300*time.Second),
 
 		// MinIO S3
-		MinioEndpoint:       getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinioEndpoint:       getEnv("MINIO_ENDPOINT", "minio:9000"),
 		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", "minioadmin"),
 		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", "minioadmin"),
 		MinioUseSsl:         getBool("MINIO_USE_SSL", false),
