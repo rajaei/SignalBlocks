@@ -4,7 +4,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/rajaei/SignalBlocks/internal/storage" 
+	"github.com/rajaei/SignalBlocks/internal/eventbus/nats"
+	"github.com/rajaei/SignalBlocks/internal/storage"
+	//"github.com/rs/zerolog/log"
 )
 
 func main() {
@@ -38,4 +40,14 @@ func main() {
 	os.Remove(testFile)
 
 	log.Println("Test upload successful!")
+
+	client1, err := nats.NewClient(nats.Config{
+		URL: "nats://127.0.0.1:4222",
+	})
+	if err != nil {
+		log.Fatalf("NATS client error: %v", err)
+	}
+	defer client1.Close()
+
+	log.Println("NATS test successful!")
 }

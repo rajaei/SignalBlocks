@@ -12,8 +12,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"signalblocks/internal/config"
-	"signalblocks/pkg/types"
+	"github.com/rajaei/SignalBlocks/internal/config"
+	"github.com/rajaei/SignalBlocks/pkg/types"
 )
 
 // Logger wraps zerolog with NATS integration
