@@ -1,256 +1,134 @@
 package config
 
 import (
+	"encoding/json"
+	//"fmt"
 	"os"
 	"strconv"
-	"strings"
-	"time"
+	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
-// Config holds all application configuration from environment variables
+// Config تمام تنظیمات برنامه
 type Config struct {
-	// Application
-	Environment string
-	LogLevel    string
+	Environment string `json:"environment"`
+	LogLevel    string `json:"log_level"`
 
-	// HTTP Server
-	HTTPPort             string
-	HTTPReadTimeout      time.Duration
-	HTTPWriteTimeout     time.Duration
-	HTTPShutdownTimeout  time.Duration
+	NATSURL       string `json:"nats_url"`
+	RedisAddr     string `json:"redis_addr"`
+	RedisDB       int    `json:"redis_db"`
+	RedisPassword string `json:"redis_password"`
 
-	// Monitoring UI
-	MonitoringUIPort           string
-	MonitoringUIRefreshInterval time.Duration
+	MinioEndpoint  string `json:"minio_endpoint"`
+	MinioAccessKey string `json:"minio_access_key"`
+	MinioSecretKey string `json:"minio_secret_key"`
+	MinioUseSSL    bool   `json:"minio_use_ssl"`
+	MinioBucket    string `json:"minio_bucket"`
 
-	// Prometheus Metrics
-	PrometheusPort  string
-	PrometheusEnabled bool
-	MetricsRetention time.Duration
+	IngestWorkers     int `json:"ingest_workers"`
+	ProcessingWorkers int `json:"processing_workers"`
 
-	// NATS JetStream
-	NatsURL                   string
-	NatsMaxReconnectAttempts  int
-	NatsReconnectWait         time.Duration
-	NatsRequestTimeout        time.Duration
+	SessionBuilderEnabled bool `json:"session_builder_enabled"`
 
-	// Redis
-	RedisAddr          string
-	RedisDB            int
-	RedisPassword      string
-	RedisMaxConnPool   int
-	RedisIdleTimeout   time.Duration
-
-	// MinIO S3
-	MinioEndpoint      string
-	MinioAccessKey     string
-	MinioSecretKey     string
-	MinioUseSsl        bool
-	MinioRegion        string
-	MinioBucketData    string
-	MinioPartitionLayout string
-
-	// Processing
-	IngestWorkers              int
-	ProcessingWorkers          int
-	IngestBatchSize            int
-	IngestBatchTimeout         time.Duration
-	ProcessingBatchSize        int
-	ProcessingBatchTimeout     time.Duration
-
-	// Session Builder
-	SessionBuilderEnabled      bool
-	SessionChangeCheckInterval time.Duration
-	SessionFlushInterval       time.Duration
-
-	// Parquet
-	ParquetPageSize      int
-	ParquetRowGroupSize  int
-	ParquetCompression   string
-	ParquetWriteTimeout  time.Duration
-
-	// Tag Configuration
-	TagCacheTTL           time.Duration
-	TagMaxCacheSize       int
-	TagMetadataUpdateInterval time.Duration
+	EnableLoadBalancing bool `json:"enable_load_balancing"`
+	IngestGroups        int  `json:"ingest_groups"`
+	MaxTagsPerMessage   int  `json:"max_tags_per_message"`
 
 	// Logging
-	ZerologLevel       string
-	LokiEnabled        bool
-	LokiURL            string
-	LokiBatchSize      int
-	LokiBatchTimeout   time.Duration
-
-	// Grafana
-	GrafanaPassword    string
-	GrafanaProvisioning bool
-
-	// SLA Targets
-	QueryLatencyTargetMs    float64
-	IngestThroughputTargetPerSec int
-
-	// Feature Flags
-	FeatureMultiNodeReady   bool
-	FeatureDuckDBQueryEngine bool
-	FeatureRedisLiveIndex   bool
-	FeatureSessionTracking bool
-
-	// Debug
-	DebugMode           bool
-	DebugTraceIngest    bool
-	DebugTraceProcessing bool
-	DebugTraceStorage   bool
-	MockMQTTPublisher   bool
-	MockDataRate        int
+	ZerologLevel     string `json:"zerolog_level"`
+	LokiEnabled      bool   `json:"loki_enabled"`
+	LokiURL          string `json:"loki_url"`
+	LokiBatchSize    int    `json:"loki_batch_size"`
+	LokiBatchTimeout int    `json:"loki_batch_timeout"` // میلی‌ثانیه
 }
 
-// Load reads configuration from environment variables
-func Load() *Config {
-	return &Config{
-		// Application
+// ConfigManager مدیریت کانفیگ
+type ConfigManager struct {
+	config Config
+	mu     sync.RWMutex
+}
+
+// NewConfigManager - اولویت با فایل JSON، fallback به env
+func NewConfigManager(filePath string) *ConfigManager {
+	var cfg Config
+
+	// اول سعی کن از فایل بخونه
+	if filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err == nil {
+			if err := json.Unmarshal(data, &cfg); err == nil {
+				log.Info().Str("file", filePath).Msg("Config loaded from JSON")
+				return &ConfigManager{config: cfg}
+			}
+			log.Warn().Err(err).Msg("Invalid config.json - falling back to env")
+		} else {
+			log.Warn().Err(err).Str("file", filePath).Msg("Config file not found - falling back to env")
+		}
+	}
+
+	// fallback به env
+	cfg = Config{
 		Environment: getEnv("ENVIRONMENT", "development"),
 		LogLevel:    getEnv("LOG_LEVEL", "debug"),
 
-		// HTTP Server
-		HTTPPort:            getEnv("HTTP_PORT", "8080"),
-		HTTPReadTimeout:     getDuration("HTTP_READ_TIMEOUT_SEC", 30*time.Second),
-		HTTPWriteTimeout:    getDuration("HTTP_WRITE_TIMEOUT_SEC", 30*time.Second),
-		HTTPShutdownTimeout: getDuration("HTTP_SHUTDOWN_TIMEOUT_SEC", 10*time.Second),
+		NATSURL:       getEnv("NATS_URL", "nats://172.21.0.4:4222"),
+		RedisAddr:     getEnv("REDIS_ADDR", "172.21.0.4:6379"),
+		RedisDB:       getInt("REDIS_DB", 0),
+		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
-		// Monitoring UI
-		MonitoringUIPort:            getEnv("MONITORING_UI_PORT", "8081"),
-		MonitoringUIRefreshInterval: getDurationMs("MONITORING_UI_REFRESH_INTERVAL_MS", 5000*time.Millisecond),
+		MinioEndpoint:  getEnv("MINIO_ENDPOINT", "172.21.0.4:9000"),
+		MinioAccessKey: getEnv("MINIO_ROOT_USER", "minioadmin"),
+		MinioSecretKey: getEnv("MINIO_ROOT_PASSWORD", "minioadmin123"),
+		MinioUseSSL:    getBool("MINIO_USE_SSL", false),
+		MinioBucket:    getEnv("MINIO_BUCKET", "signalblocks"),
 
-		// Prometheus Metrics
-		PrometheusPort:    getEnv("PROMETHEUS_PORT", "9091"),
-		PrometheusEnabled: getBool("PROMETHEUS_ENABLED", false),
-		MetricsRetention: getDuration("METRICS_RETENTION_HOURS", 24*time.Hour),
+		IngestWorkers:     getInt("INGEST_WORKERS", 4),
+		ProcessingWorkers: getInt("PROCESSING_WORKERS", 4),
 
-		// NATS JetStream
-		NatsURL:                  getEnv("NATS_URL", "nats://localhost:4222"),
-		NatsMaxReconnectAttempts: getInt("NATS_MAX_RECONNECT_ATTEMPTS", 10),
-		NatsReconnectWait:        getDurationMs("NATS_RECONNECT_WAIT_MS", 250*time.Millisecond),
-		NatsRequestTimeout:       getDurationMs("NATS_REQUEST_TIMEOUT_MS", 5000*time.Millisecond),
+		SessionBuilderEnabled: getBool("SESSION_BUILDER_ENABLED", true),
 
-		// Redis
-		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisDB:          getInt("REDIS_DB", 0),
-		RedisPassword:    getEnv("REDIS_PASSWORD", ""),
-		RedisMaxConnPool: getInt("REDIS_MAX_CONN_POOL", 100),
-		RedisIdleTimeout: getDuration("REDIS_IDLE_TIMEOUT_SEC", 300*time.Second),
+		EnableLoadBalancing: getBool("ENABLE_LOAD_BALANCING", true),
+		IngestGroups:        getInt("INGEST_GROUPS", 4),
+		MaxTagsPerMessage:   getInt("MAX_TAGS_PER_MESSAGE", 100),
 
-		// MinIO S3
-		MinioEndpoint:       getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinioAccessKey:      getEnv("MINIO_ACCESS_KEY", "minioadmin"),
-		MinioSecretKey:      getEnv("MINIO_SECRET_KEY", "minioadmin"),
-		MinioUseSsl:         getBool("MINIO_USE_SSL", false),
-		MinioRegion:         getEnv("MINIO_REGION", "us-east-1"),
-		MinioBucketData:     getEnv("MINIO_BUCKET_DATA", "signalblocks-data"),
-		MinioPartitionLayout: getEnv("MINIO_PARTITION_LAYOUT", "year/month/day/group"),
-
-		// Processing
-		IngestWorkers:        getInt("INGEST_WORKERS", 4),
-		ProcessingWorkers:    getInt("PROCESSING_WORKERS", 4),
-		IngestBatchSize:      getInt("INGEST_BATCH_SIZE", 1000),
-		IngestBatchTimeout:   getDurationMs("INGEST_BATCH_TIMEOUT_MS", 100*time.Millisecond),
-		ProcessingBatchSize:  getInt("PROCESSING_BATCH_SIZE", 10000),
-		ProcessingBatchTimeout: getDurationMs("PROCESSING_BATCH_TIMEOUT_MS", 500*time.Millisecond),
-
-		// Session Builder
-		SessionBuilderEnabled:      getBool("SESSION_BUILDER_ENABLED", true),
-		SessionChangeCheckInterval: getDurationMs("SESSION_CHANGE_CHECK_INTERVAL_MS", 1000*time.Millisecond),
-		SessionFlushInterval:       getDurationMs("SESSION_FLUSH_INTERVAL_MS", 5000*time.Millisecond),
-
-		// Parquet
-		ParquetPageSize:     getInt("PARQUET_PAGE_SIZE", 1048576),
-		ParquetRowGroupSize: getInt("PARQUET_ROW_GROUP_SIZE", 131072),
-		ParquetCompression:  getEnv("PARQUET_COMPRESSION", "SNAPPY"),
-		ParquetWriteTimeout: getDuration("PARQUET_WRITE_TIMEOUT_SEC", 60*time.Second),
-
-		// Tag Configuration
-		TagCacheTTL:                getDuration("TAG_CACHE_TTL_SEC", 3600*time.Second),
-		TagMaxCacheSize:            getInt("TAG_MAX_CACHE_SIZE", 100000),
-		TagMetadataUpdateInterval:  getDurationMs("TAG_METADATA_UPDATE_INTERVAL_MS", 5000*time.Millisecond),
-
-		// Logging
 		ZerologLevel:     getEnv("ZEROLOG_LEVEL", "debug"),
 		LokiEnabled:      getBool("LOKI_ENABLED", false),
-		LokiURL:          getEnv("LOKI_URL", "http://localhost:3100"),
+		LokiURL:          getEnv("LOKI_URL", "http://172.21.0.4:3100/loki/api/v1/push"),
 		LokiBatchSize:    getInt("LOKI_BATCH_SIZE", 100),
-		LokiBatchTimeout: getDurationMs("LOKI_BATCH_TIMEOUT_MS", 1000*time.Millisecond),
-
-		// Grafana
-		GrafanaPassword:    getEnv("GRAFANA_PASSWORD", "admin"),
-		GrafanaProvisioning: getBool("GRAFANA_PROVISIONING_ENABLED", true),
-
-		// SLA Targets
-		QueryLatencyTargetMs:    getFloat("QUERY_LATENCY_TARGET_MS", 2.0),
-		IngestThroughputTargetPerSec: getInt("INGEST_THROUGHPUT_TARGET_MSGS_SEC", 100000),
-
-		// Feature Flags
-		FeatureMultiNodeReady:       getBool("FEATURE_MULTI_NODE_READY", false),
-		FeatureDuckDBQueryEngine:    getBool("FEATURE_DUCKDB_QUERY_ENGINE", true),
-		FeatureRedisLiveIndex:       getBool("FEATURE_REDIS_LIVE_INDEX", true),
-		FeatureSessionTracking:      getBool("FEATURE_SESSION_TRACKING", true),
-
-		// Debug
-		DebugMode:            getBool("DEBUG_MODE", false),
-		DebugTraceIngest:     getBool("DEBUG_TRACE_INGEST", false),
-		DebugTraceProcessing: getBool("DEBUG_TRACE_PROCESSING", false),
-		DebugTraceStorage:    getBool("DEBUG_TRACE_STORAGE", false),
-		MockMQTTPublisher:    getBool("MOCK_MQTT_PUBLISHER", false),
-		MockDataRate:         getInt("MOCK_DATA_RATE_HZ", 100),
+		LokiBatchTimeout: getInt("LOKI_BATCH_TIMEOUT_MS", 500),
 	}
+
+	return &ConfigManager{config: cfg}
+}
+
+// GetConfig - کپی امن کانفیگ
+func (cm *ConfigManager) GetConfig() Config {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	return cm.config
 }
 
 // Helper functions
-
 func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
 	return defaultValue
 }
 
 func getInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
-		}
-	}
-	return defaultValue
-}
-
-func getFloat(key string, defaultValue float64) float64 {
-	if value := os.Getenv(key); value != "" {
-		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-			return floatVal
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
 		}
 	}
 	return defaultValue
 }
 
 func getBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		return strings.ToLower(value) == "true" || value == "1" || strings.ToLower(value) == "yes"
-	}
-	return defaultValue
-}
-
-func getDuration(key string, defaultValue time.Duration) time.Duration {
-	if value := os.Getenv(key); value != "" {
-		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return time.Duration(seconds) * time.Second
-		}
-	}
-	return defaultValue
-}
-
-func getDurationMs(key string, defaultValue time.Duration) time.Duration {
-	if value := os.Getenv(key); value != "" {
-		if ms, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return time.Duration(ms) * time.Millisecond
-		}
+	if v := os.Getenv(key); v != "" {
+		return v == "true" || v == "1" || v == "yes"
 	}
 	return defaultValue
 }

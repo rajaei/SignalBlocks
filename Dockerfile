@@ -1,10 +1,10 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
 # Install build dependencies
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add git ca-certificates tzdata
 
 # Copy Go module files
 COPY go.mod go.sum ./
@@ -29,7 +29,7 @@ FROM alpine:latest
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata curl wget
+RUN apk add ca-certificates tzdata curl wget
 
 # Copy the binary from builder
 COPY --from=builder /app/bin/signalblocks /app/signalblocks
