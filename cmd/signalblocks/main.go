@@ -1,53 +1,75 @@
 package main
 
 import (
-	"log"
-	"os"
+	"context"
+	//"log"
+	//"os"
 
+	"github.com/rajaei/SignalBlocks/internal/config"
 	"github.com/rajaei/SignalBlocks/internal/eventbus/nats"
 	"github.com/rajaei/SignalBlocks/internal/storage"
-	//"github.com/rs/zerolog/log"
+
+	"github.com/rs/zerolog"
+	zerologger "github.com/rs/zerolog/log"
 )
 
+var logger zerolog.Logger
+
+func init() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	logger = zerologger.With().Timestamp().Logger()
+}
+
 func main() {
-	cfg := storage.MinioConfig{
-		Endpoint:  "127.0.0.1:9000",
-		AccessKey: "minioadmin",
-		SecretKey: "minioadmin",
-		UseSSL:    false,
-		Bucket:    "signalblocks",
-	}
+	logger.Info().Msg("SignalBlocks starting...")
 
-	client, err := storage.NewMinio(cfg)
-	if err != nil {
-		log.Fatalf("MinIO client error: %v", err)
-	}
+	// لود کانفیگ (اولویت با فایل)
+	cfgMgr := config.NewConfigManager("../../internal/config/config.json")
+	cfg := cfgMgr.GetConfig()
 
-	// ساخت فایل تست
-	testFile := "test-upload.txt"
-	content := []byte("Hello from SignalBlocks - MinIO Test")
-	if err := os.WriteFile(testFile, content, 0644); err != nil {
-		log.Fatalf("Failed to create test file: %v", err)
-	}
+	// استفاده از cfg برای رفع unused var
+	logger.Info().
+		Str("env", cfg.Environment).
+		Str("nats_url", cfg.NATSURL).
+		Str("minio_endpoint", cfg.MinioEndpoint).
+		Msg("Config loaded")
 
-	// آپلود
-	err = storage.UploadFile(client, cfg.Bucket, "test/test-upload.txt", testFile)
-	if err != nil {
-		log.Fatalf("Upload failed: %v", err)
-	}
-
-	// پاک کردن فایل تست (اختیاری)
-	os.Remove(testFile)
-
-	log.Println("Test upload successful!")
-
-	client1, err := nats.NewClient(nats.Config{
-		URL: "nats://127.0.0.1:4222",
+	// تست NATS
+	natsClient, err := nats.NewClient(nats.Config{
+		URL: cfg.NATSURL,
 	})
 	if err != nil {
-		log.Fatalf("NATS client error: %v", err)
+		logger.Fatal().Err(err).Msg("NATS connection failed")
 	}
-	defer client1.Close()
+	defer natsClient.Close()
 
-	log.Println("NATS test successful!")
+	logger.Info().Msg("NATS connected")
+
+	// تست MinIO
+	minioCfg := storage.MinioConfig{
+		Endpoint:  cfg.MinioEndpoint,
+		AccessKey: cfg.MinioAccessKey,
+		SecretKey: cfg.MinioSecretKey,
+		UseSSL:    cfg.MinioUseSSL,
+		Bucket:    cfg.MinioBucket,
+	}
+
+	minioClient, err := storage.NewMinio(minioCfg)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("MinIO client error")
+	}
+
+	// استفاده ساده از minioClient (برای رفع unused)
+	ctx := context.Background()
+	exists, err := minioClient.BucketExists(ctx, cfg.MinioBucket)
+	if err != nil {
+		logger.Error().Err(err).Msg("Failed to check bucket")
+	} else if exists {
+		logger.Info().Str("bucket", cfg.MinioBucket).Msg("Bucket exists")
+	} else {
+		logger.Info().Str("bucket", cfg.MinioBucket).Msg("Bucket will be created on first write")
+	}
+
+	// نگه داشتن برنامه
+	select {}
 }

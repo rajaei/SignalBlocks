@@ -230,4 +230,4 @@ session_types:
 # Conditions (optional):
 # - tag_state == active/inactive/error
 # - value == N or value > N, value < N
-# - change_detected (any state change)
+# - change_detected (any state chan

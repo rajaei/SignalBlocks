@@ -112,12 +112,9 @@ services:
       PROCESSING_WORKERS: 4
       SESSION_BUILDER_ENABLED: "true"
       # LOKI_URL removed
-    volumes:
-      - ./cmd:/app/cmd:ro
-      - ./internal:/app/internal:ro
-      - ./pkg:/app/pkg:ro
-      - ./go.mod:/app/go.mod:ro
-      - ./go.sum:/app/go.sum:ro
+      volumes:
+      - .:/app                 # کل پروژه (برای hot-reload)
+      - D:/go-mod-cache:/go/pkg/mod:ro  # کش Go (بدون اینترنت)
     networks:
       - signalblocks-net
     depends_on:

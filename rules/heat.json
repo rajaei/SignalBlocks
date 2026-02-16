@@ -1,0 +1,22 @@
+{
+  "type": "heat",
+  "trigger_tag_id": "EAF_Heat_Number",
+  "output_file": "heat_sessions.parquet",
+  "partition_by": ["year", "month", "day"],
+  "kpis": [
+    {
+      "name": "total_energy_kwh",
+      "type": "integral",
+      "source_tag": "EAF_Total_Power",
+      "condition": "state == ACTIVE",
+      "unit": "kWh",
+      "description": "انرژی مصرفی کل ذوب"
+    },
+    {
+      "name": "uptime_seconds",
+      "type": "duration",
+      "condition": "state == ACTIVE",
+      "description": "زمان فعال بودن کوره"
+    }
+  ]
+}
